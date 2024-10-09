@@ -784,7 +784,14 @@ class RowParallelLinear(LinearBase):
                                                   input_parallel,
                                                   bias=bias_)
         if self.reduce_results and self.tp_size > 1:
-            output = tensor_model_parallel_all_reduce(output_parallel)
+            # output = tensor_model_parallel_all_reduce(output_parallel)
+            gathered_output = tensor_model_parallel_all_gather(output_parallel)
+            tp_size = get_tensor_model_parallel_world_size()
+            gathered_output = gathered_output.reshape(tp_size, gathered_output.shape[0], -1)
+            if hasattr(self, "compression_scheme"):
+                for i in range(tp_size):
+                    gathered_output[i] = self.compression_scheme(gathered_output[i])
+            output = gathered_output.sum(dim=0)
         else:
             output = output_parallel
 
