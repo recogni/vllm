@@ -1,25 +1,29 @@
 """Attention layer with xFormers and PagedAttention."""
+
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Type
 
 import torch
 from xformers import ops as xops
-from xformers.ops.fmha.attn_bias import (AttentionBias,
-                                         BlockDiagonalCausalMask,
-                                         LowerTriangularMaskWithTensorBias)
+from xformers.ops.fmha.attn_bias import (
+    AttentionBias,
+    BlockDiagonalCausalMask,
+    LowerTriangularMaskWithTensorBias,
+)
 
-from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
-                                              AttentionMetadata,
-                                              AttentionMetadataPerStage)
-from vllm.attention.ops.paged_attn import (PagedAttention,
-                                           PagedAttentionMetadata)
+from vllm.attention.backends.abstract import (
+    AttentionBackend,
+    AttentionImpl,
+    AttentionMetadata,
+    AttentionMetadataPerStage,
+)
+from vllm.attention.ops.paged_attn import PagedAttention, PagedAttentionMetadata
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
 
 
 class XFormersBackend(AttentionBackend):
-
     @staticmethod
     def get_impl_cls() -> Type["XFormersImpl"]:
         return XFormersImpl
@@ -35,8 +39,9 @@ class XFormersBackend(AttentionBackend):
         num_kv_heads: int,
         head_size: int,
     ) -> Tuple[int, ...]:
-        return PagedAttention.get_kv_cache_shape(num_blocks, block_size,
-                                                 num_kv_heads, head_size)
+        return PagedAttention.get_kv_cache_shape(
+            num_blocks, block_size, num_kv_heads, head_size
+        )
 
     @staticmethod
     def swap_blocks(
@@ -63,6 +68,7 @@ class XFormersMetadata(AttentionMetadataPerStage, PagedAttentionMetadata):
     dynamically, it should be stored in tensor. The tensor has to be
     updated from `CUDAGraphRunner.forward` API.
     """
+
     # Currently, input sequences can only contain all prompts
     # or all decoding. True if all sequences are prompts.
     is_prompt: bool
@@ -70,7 +76,6 @@ class XFormersMetadata(AttentionMetadataPerStage, PagedAttentionMetadata):
     prompt_lens: Optional[List[int]]
     # prompt_lens stored as a tensor.
     prompt_lens_tensor: Optional[torch.Tensor]
-
     # NOTE(sang): Definition of context_len, subquery_len, and seqlen.
     # |---------- N-1 iteration --------|
     # |---------------- N iteration ---------------------|
@@ -115,11 +120,11 @@ class XFormersMetadata(AttentionMetadataPerStage, PagedAttentionMetadata):
 class XFormersImpl(AttentionImpl):
     """
     If the input tensors contain prompt tokens, the layout is as follows:
-    |<--------------- num_prefill_tokens ----------------->|	
+    |<--------------- num_prefill_tokens ----------------->|
     |<--prefill_0-->|<--prefill_1-->|...|<--prefill_N-1--->|
 
-    Otherwise, the layout is as follows:	
-    |<----------------- num_decode_tokens ------------------>|	
+    Otherwise, the layout is as follows:
+    |<----------------- num_decode_tokens ------------------>|
     |<--decode_0-->|..........|<--decode_M-1-->|<--padding-->|
 
     Generation tokens can contain padding when cuda-graph is used.
@@ -163,7 +168,8 @@ class XFormersImpl(AttentionImpl):
         if head_size not in suppored_head_sizes:
             raise ValueError(
                 f"Head size {head_size} is not supported by PagedAttention. "
-                f"Supported head sizes are: {suppored_head_sizes}.")
+                f"Supported head sizes are: {suppored_head_sizes}."
+            )
 
     def forward(
         self,
@@ -192,16 +198,21 @@ class XFormersImpl(AttentionImpl):
 
         if kv_cache is not None:
             key_cache, value_cache = PagedAttention.split_kv_cache(
-                kv_cache, self.num_kv_heads, self.head_size)
+                kv_cache, self.num_kv_heads, self.head_size
+            )
 
             # Reshape the input keys and values and store them in the cache.
             # If kv_cache is not provided, the new key and value tensors are
             # not cached. This happens during the initial memory profiling run.
-            PagedAttention.write_to_paged_cache(key, value, key_cache,
-                                                value_cache,
-                                                attn_metadata.slot_mapping,
-                                                attn_metadata.kv_cache_dtype,
-                                                kv_scale)
+            PagedAttention.write_to_paged_cache(
+                key,
+                value,
+                key_cache,
+                value_cache,
+                attn_metadata.slot_mapping,
+                attn_metadata.kv_cache_dtype,
+                kv_scale,
+            )
 
         num_prefill_tokens = attn_metadata.num_prefill_tokens
         num_decode_tokens = attn_metadata.num_decode_tokens
@@ -226,7 +237,8 @@ class XFormersImpl(AttentionImpl):
                 # block tables are empty if the prompt does not have a cached
                 # prefix.
                 out = self._run_memory_efficient_xformers_forward(
-                    query, key, value, prefill_meta)
+                    query, key, value, prefill_meta
+                )
                 assert out.shape == output[:num_prefill_tokens].shape
                 output[:num_prefill_tokens] = out
             else:
@@ -294,30 +306,44 @@ class XFormersImpl(AttentionImpl):
             # GQA/MQA requires the shape [B, M, G, H, K].
             # Note that the output also has the same shape (which is different
             # from a spec from the doc).
-            query = query.view(query.shape[0], self.num_kv_heads,
-                               self.num_queries_per_kv, query.shape[-1])
-            key = key[:, :,
-                      None, :].expand(key.shape[0], self.num_kv_heads,
-                                      self.num_queries_per_kv, key.shape[-1])
-            value = value[:, :,
-                          None, :].expand(value.shape[0], self.num_kv_heads,
-                                          self.num_queries_per_kv,
-                                          value.shape[-1])
+            query = query.view(
+                query.shape[0],
+                self.num_kv_heads,
+                self.num_queries_per_kv,
+                query.shape[-1],
+            )
+            key = key[:, :, None, :].expand(
+                key.shape[0],
+                self.num_kv_heads,
+                self.num_queries_per_kv,
+                key.shape[-1],
+            )
+            value = value[:, :, None, :].expand(
+                value.shape[0],
+                self.num_kv_heads,
+                self.num_queries_per_kv,
+                value.shape[-1],
+            )
         # Set attention bias if not provided. This typically happens at
         # the very attention layer of every iteration.
         # FIXME(woosuk): This is a hack.
         if attn_metadata.attn_bias is None:
             if self.alibi_slopes is None:
                 attn_bias = BlockDiagonalCausalMask.from_seqlens(
-                    attn_metadata.prompt_lens)
+                    attn_metadata.prompt_lens
+                )
                 if self.sliding_window is not None:
                     attn_bias = attn_bias.make_local_attention(
-                        self.sliding_window)
+                        self.sliding_window
+                    )
                 attn_metadata.attn_bias = [attn_bias]
             else:
                 attn_metadata.attn_bias = _make_alibi_bias(
-                    self.alibi_slopes, self.num_kv_heads, query.dtype,
-                    attn_metadata.prompt_lens)
+                    self.alibi_slopes,
+                    self.num_kv_heads,
+                    query.dtype,
+                    attn_metadata.prompt_lens,
+                )
 
         # No alibi slopes.
         # TODO(woosuk): Too many view operations. Let's try to reduce
@@ -333,7 +359,8 @@ class XFormersImpl(AttentionImpl):
                 value,
                 attn_bias=attn_metadata.attn_bias[0],
                 p=0.0,
-                scale=self.scale)
+                scale=self.scale,
+            )
             return out.view_as(original_query)
 
         # Attention with alibi slopes.
@@ -350,7 +377,8 @@ class XFormersImpl(AttentionImpl):
                 value[None, start:end],
                 attn_bias=attn_metadata.attn_bias[i],
                 p=0.0,
-                scale=self.scale)
+                scale=self.scale,
+            )
             # TODO(woosuk): Unnecessary copy. Optimize.
             output[start:end].copy_(out.view_as(original_query[start:end]))
             start += prompt_len

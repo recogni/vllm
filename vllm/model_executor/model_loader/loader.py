@@ -3,29 +3,46 @@ import copy
 import glob
 import os
 from abc import ABC, abstractmethod
-from typing import (TYPE_CHECKING, Any, Dict, Generator, List, Optional, Tuple,
-                    Type)
+from collections.abc import Generator
+from typing import Any, Dict, List, Optional, Tuple, Type
 
 import torch
 from torch import nn
+from torch.nn.parameter import Parameter
 
-from vllm.config import (VLLM_USE_MODELSCOPE, DeviceConfig, LoadConfig,
-                         LoadFormat, LoRAConfig, ModelConfig, ParallelConfig,
-                         SchedulerConfig, VisionLanguageConfig)
+from recogni import torch_emu
+from vllm.config import (
+    VLLM_USE_MODELSCOPE,
+    DeviceConfig,
+    LoadConfig,
+    LoadFormat,
+    LoRAConfig,
+    ModelConfig,
+    ParallelConfig,
+    SchedulerConfig,
+    VisionLanguageConfig,
+)
 from vllm.logger import init_logger
+from vllm.model_executor.layers.linear import LinearMethodBase, set_weight_attrs
 from vllm.model_executor.model_loader.tensorizer import (
-    TensorizerConfig, is_vllm_serialized_tensorizer, load_with_tensorizer,
-    tensorizer_weights_iterator)
-from vllm.model_executor.model_loader.utils import (get_model_architecture,
-                                                    set_default_torch_dtype)
+    TensorizerConfig,
+    is_vllm_serialized_tensorizer,
+    load_with_tensorizer,
+    tensorizer_weights_iterator,
+)
+from vllm.model_executor.model_loader.utils import get_model_architecture, set_default_torch_dtype
 from vllm.model_executor.model_loader.weight_utils import (
-    download_weights_from_hf, filter_files_not_needed_for_inference,
-    get_quant_config, initialize_dummy_weights, np_cache_weights_iterator,
-    pt_weights_iterator, safetensors_weights_iterator)
+    download_weights_from_hf,
+    filter_files_not_needed_for_inference,
+    get_quant_config,
+    initialize_dummy_weights,
+    np_cache_weights_iterator,
+    pt_weights_iterator,
+    safetensors_weights_iterator,
+)
 from vllm.model_executor.models.llava import LlavaForConditionalGeneration
 
-if TYPE_CHECKING:
-    from vllm.model_executor.layers.linear import LinearMethodBase
+# if TYPE_CHECKING:
 
 _VISION_MODEL_CLASSES = [
     LlavaForConditionalGeneration,
@@ -34,12 +51,51 @@ _VISION_MODEL_CLASSES = [
 logger = init_logger(__name__)
 
 
-def _get_linear_method(
-        model_config: ModelConfig,
-        load_config: LoadConfig) -> Optional["LinearMethodBase"]:
+class RecogniFastLinear(LinearMethodBase):
+    """Fast linear method for Recogni."""
+
+    def __init__(self):
+        self.dtype_in = torch_emu.dtypes.EBDataType(enum=torch_emu.dtypes.V2_RFP16.to_enum(), eb=0)
+        self.dtype_out = torch_emu.dtypes.EBDataType(enum=torch_emu.dtypes.V2_RFP16.to_enum(), eb=0)
+
+    def create_weights(
+        self,
+        layer: torch.nn.Module,
+        input_size_per_partition: int,
+        output_partition_sizes: list[int],
+        input_size: int,
+        output_size: int,
+        params_dtype: torch.dtype,
+        **extra_weight_attrs,
+    ) -> None:
+        output_size_per_partition = sum(output_partition_sizes)
+        weight = Parameter(
+            torch.empty(output_size_per_partition, input_size_per_partition, dtype=params_dtype), requires_grad=False
+        )
+        set_weight_attrs(weight, {"input_dim": 1, "output_dim": 0})
+        layer.register_parameter("weight", weight)
+        set_weight_attrs(weight, extra_weight_attrs)
+
+    def apply_weights(
+        self, layer: torch.nn.Module, x: torch.Tensor, bias: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        return torch_emu.ops.qonly.linear(
+            input=x,
+            weights=layer.weight,
+            bias=bias,
+            dtype_in=self.dtype_in,
+            dtype_out=self.dtype_out,
+        )
+
+
+def _get_linear_method(model_config: ModelConfig, load_config: LoadConfig) -> Optional["LinearMethodBase"]:
     """Get the (maybe quantized) linear method."""
     linear_method = None
-    if model_config.quantization is not None:
+
+    if model_config.quantization == "recogni":
+        linear_method = RecogniFastLinear()
+        logger.info("Using RecogniFastLinear as linear method.")
+    elif model_config.quantization is not None:
         quant_config = get_quant_config(model_config, load_config)
         capability = torch.cuda.get_device_capability()
         capability = capability[0] * 10 + capability[1]
@@ -48,21 +104,24 @@ def _get_linear_method(
                 f"The quantization method {model_config.quantization} is not "
                 "supported for the current GPU. "
                 f"Minimum capability: {quant_config.get_min_capability()}. "
-                f"Current capability: {capability}.")
+                f"Current capability: {capability}."
+            )
         supported_dtypes = quant_config.get_supported_act_dtypes()
         if model_config.dtype not in supported_dtypes:
             raise ValueError(
                 f"{model_config.dtype} is not supported for quantization "
                 f"method {model_config.quantization}. Supported dtypes: "
-                f"{supported_dtypes}")
+                f"{supported_dtypes}"
+            )
 
         linear_method = quant_config.get_linear_method()
     return linear_method
 
 
 def _get_model_initialization_kwargs(
-        model_class: Type[nn.Module], lora_config: Optional[LoRAConfig],
-        vision_language_config: Optional[VisionLanguageConfig]
+    model_class: Type[nn.Module],
+    lora_config: Optional[LoRAConfig],
+    vision_language_config: Optional[VisionLanguageConfig],
 ) -> Dict[str, Any]:
     """Get extra kwargs for model initialization."""
     extra_kwargs = {}
@@ -73,24 +132,28 @@ def _get_model_initialization_kwargs(
             f"Model {model_class.__name__} does not support LoRA, "
             "but LoRA is enabled. Support for this model may "
             "be added in the future. If this is important to you, "
-            "please open an issue on github.")
+            "please open an issue on github."
+        )
     elif model_class in _VISION_MODEL_CLASSES:
         extra_kwargs["vision_language_config"] = vision_language_config
     return extra_kwargs
 
 
 def _initialize_model(
-        model_config: ModelConfig, load_config: LoadConfig,
-        lora_config: Optional[LoRAConfig],
-        vision_language_config: Optional[VisionLanguageConfig]) -> nn.Module:
+    model_config: ModelConfig,
+    load_config: LoadConfig,
+    lora_config: Optional[LoRAConfig],
+    vision_language_config: Optional[VisionLanguageConfig],
+) -> nn.Module:
     """Initialize a model with the given configurations."""
     model_class = get_model_architecture(model_config)[0]
     linear_method = _get_linear_method(model_config, load_config)
 
-    return model_class(config=model_config.hf_config,
-                       linear_method=linear_method,
-                       **_get_model_initialization_kwargs(
-                           model_class, lora_config, vision_language_config))
+    return model_class(
+        config=model_config.hf_config,
+        linear_method=linear_method,
+        **_get_model_initialization_kwargs(model_class, lora_config, vision_language_config),
+    )
 
 
 class BaseModelLoader(ABC):
@@ -100,12 +163,16 @@ class BaseModelLoader(ABC):
         self.load_config = load_config
 
     @abstractmethod
-    def load_model(self, *, model_config: ModelConfig,
-                   device_config: DeviceConfig,
-                   lora_config: Optional[LoRAConfig],
-                   vision_language_config: Optional[VisionLanguageConfig],
-                   parallel_config: ParallelConfig,
-                   scheduler_config: SchedulerConfig) -> nn.Module:
+    def load_model(
+        self,
+        *,
+        model_config: ModelConfig,
+        device_config: DeviceConfig,
+        lora_config: Optional[LoRAConfig],
+        vision_language_config: Optional[VisionLanguageConfig],
+        parallel_config: ParallelConfig,
+        scheduler_config: SchedulerConfig,
+    ) -> nn.Module:
         """Load a model with the given configurations."""
         ...
 
@@ -116,15 +183,16 @@ class DefaultModelLoader(BaseModelLoader):
     def __init__(self, load_config: LoadConfig):
         super().__init__(load_config)
         if load_config.model_loader_extra_config:
-            raise ValueError(f"Model loader extra config is not supported for "
-                             f"load format {load_config.load_format}")
+            raise ValueError(
+                f"Model loader extra config is not supported for " f"load format {load_config.load_format}"
+            )
 
-    def _maybe_download_from_modelscope(
-            self, model: str, revision: Optional[str]) -> Optional[str]:
+    def _maybe_download_from_modelscope(self, model: str, revision: Optional[str]) -> Optional[str]:
         """Download model from ModelScope hub if VLLM_USE_MODELSCOPE is True.
-        
+
         Returns the path to the downloaded model, or None if the model is not
-        downloaded from ModelScope."""
+        downloaded from ModelScope.
+        """
         if VLLM_USE_MODELSCOPE:
             # download model from ModelScope hub,
             # lazy import so that modelscope is not required for normal use.
@@ -133,22 +201,21 @@ class DefaultModelLoader(BaseModelLoader):
 
             if not os.path.exists(model):
                 model_path = snapshot_download(
-                    model_id=model,
-                    cache_dir=self.load_config.download_dir,
-                    revision=revision)
+                    model_id=model, cache_dir=self.load_config.download_dir, revision=revision
+                )
             else:
                 model_path = model
             return model_path
         return None
 
-    def _prepare_weights(self, model_name_or_path: str,
-                         revision: Optional[str],
-                         fall_back_to_pt: bool) -> Tuple[str, List[str], bool]:
+    def _prepare_weights(
+        self, model_name_or_path: str, revision: Optional[str], fall_back_to_pt: bool
+    ) -> Tuple[str, List[str], bool]:
         """Prepare weights for the model.
 
-        If the model is not local, it will be downloaded."""
-        model_name_or_path = self._maybe_download_from_modelscope(
-            model_name_or_path, revision) or model_name_or_path
+        If the model is not local, it will be downloaded.
+        """
+        model_name_or_path = self._maybe_download_from_modelscope(model_name_or_path, revision) or model_name_or_path
 
         is_local = os.path.isdir(model_name_or_path)
         load_format = self.load_config.load_format
@@ -170,9 +237,9 @@ class DefaultModelLoader(BaseModelLoader):
             allow_patterns += ["*.pt"]
 
         if not is_local:
-            hf_folder = download_weights_from_hf(model_name_or_path,
-                                                 self.load_config.download_dir,
-                                                 allow_patterns, revision)
+            hf_folder = download_weights_from_hf(
+                model_name_or_path, self.load_config.download_dir, allow_patterns, revision
+            )
         else:
             hf_folder = model_name_or_path
 
@@ -185,49 +252,50 @@ class DefaultModelLoader(BaseModelLoader):
                 break
 
         if not use_safetensors:
-            hf_weights_files = filter_files_not_needed_for_inference(
-                hf_weights_files)
+            hf_weights_files = filter_files_not_needed_for_inference(hf_weights_files)
 
         if len(hf_weights_files) == 0:
-            raise RuntimeError(
-                f"Cannot find any model weights with `{model_name_or_path}`")
+            raise RuntimeError(f"Cannot find any model weights with `{model_name_or_path}`")
 
         return hf_folder, hf_weights_files, use_safetensors
 
     def _get_weights_iterator(
-        self, model_name_or_path: str, revision: Optional[str],
-        fall_back_to_pt: bool
+        self, model_name_or_path: str, revision: Optional[str], fall_back_to_pt: bool
     ) -> Generator[Tuple[str, torch.Tensor], None, None]:
         """Get an iterator for the model weights based on the load format."""
         hf_folder, hf_weights_files, use_safetensors = self._prepare_weights(
-            model_name_or_path, revision, fall_back_to_pt)
+            model_name_or_path, revision, fall_back_to_pt
+        )
         if self.load_config.load_format == LoadFormat.NPCACHE:
             # Currently np_cache only support *.bin checkpoints
             assert use_safetensors is False
-            return np_cache_weights_iterator(model_name_or_path,
-                                             self.load_config.download_dir,
-                                             hf_folder, hf_weights_files)
+            return np_cache_weights_iterator(
+                model_name_or_path, self.load_config.download_dir, hf_folder, hf_weights_files
+            )
         if use_safetensors:
             return safetensors_weights_iterator(hf_weights_files)
         return pt_weights_iterator(hf_weights_files)
 
-    def load_model(self, *, model_config: ModelConfig,
-                   device_config: DeviceConfig,
-                   lora_config: Optional[LoRAConfig],
-                   vision_language_config: Optional[VisionLanguageConfig],
-                   parallel_config: ParallelConfig,
-                   scheduler_config: SchedulerConfig) -> nn.Module:
+    def load_model(
+        self,
+        *,
+        model_config: ModelConfig,
+        device_config: DeviceConfig,
+        lora_config: Optional[LoRAConfig],
+        vision_language_config: Optional[VisionLanguageConfig],
+        parallel_config: ParallelConfig,
+        scheduler_config: SchedulerConfig,
+    ) -> nn.Module:
         with set_default_torch_dtype(model_config.dtype):
             with torch.device(device_config.device):
-                model = _initialize_model(model_config, self.load_config,
-                                          lora_config, vision_language_config)
+                model = _initialize_model(model_config, self.load_config, lora_config, vision_language_config)
             model.load_weights(
-                self._get_weights_iterator(model_config.model,
-                                           model_config.revision,
-                                           fall_back_to_pt=getattr(
-                                               model,
-                                               "fall_back_to_pt_during_load",
-                                               True)), )
+                self._get_weights_iterator(
+                    model_config.model,
+                    model_config.revision,
+                    fall_back_to_pt=getattr(model, "fall_back_to_pt_during_load", True),
+                ),
+            )
             for _, module in model.named_modules():
                 linear_method = getattr(module, "linear_method", None)
                 if linear_method is not None:
@@ -243,19 +311,23 @@ class DummyModelLoader(BaseModelLoader):
     def __init__(self, load_config: LoadConfig):
         super().__init__(load_config)
         if load_config.model_loader_extra_config:
-            raise ValueError(f"Model loader extra config is not supported for "
-                             f"load format {load_config.load_format}")
+            raise ValueError(
+                f"Model loader extra config is not supported for " f"load format {load_config.load_format}"
+            )
 
-    def load_model(self, *, model_config: ModelConfig,
-                   device_config: DeviceConfig,
-                   lora_config: Optional[LoRAConfig],
-                   vision_language_config: Optional[VisionLanguageConfig],
-                   parallel_config: ParallelConfig,
-                   scheduler_config: SchedulerConfig) -> nn.Module:
+    def load_model(
+        self,
+        *,
+        model_config: ModelConfig,
+        device_config: DeviceConfig,
+        lora_config: Optional[LoRAConfig],
+        vision_language_config: Optional[VisionLanguageConfig],
+        parallel_config: ParallelConfig,
+        scheduler_config: SchedulerConfig,
+    ) -> nn.Module:
         with set_default_torch_dtype(model_config.dtype):
             with torch.device(device_config.device):
-                model = _initialize_model(model_config, self.load_config,
-                                          lora_config, vision_language_config)
+                model = _initialize_model(model_config, self.load_config, lora_config, vision_language_config)
             # NOTE(woosuk): For accurate performance evaluation, we assign
             # random values to the weights.
             initialize_dummy_weights(model)
@@ -270,23 +342,22 @@ class TensorizerLoader(BaseModelLoader):
         if isinstance(load_config.model_loader_extra_config, TensorizerConfig):
             self.tensorizer_config = load_config.model_loader_extra_config
         else:
-            self.tensorizer_config = TensorizerConfig(
-                **load_config.model_loader_extra_config)
+            self.tensorizer_config = TensorizerConfig(**load_config.model_loader_extra_config)
 
-    def _verify_config(self, model_config: ModelConfig,
-                       parallel_config: ParallelConfig):
+    def _verify_config(self, model_config: ModelConfig, parallel_config: ParallelConfig):
         self.tensorizer_config.verify_with_model_config(model_config)
         self.tensorizer_config.verify_with_parallel_config(parallel_config)
 
-    def _get_weights_iterator(
-            self) -> Generator[Tuple[str, torch.Tensor], None, None]:
+    def _get_weights_iterator(self) -> Generator[Tuple[str, torch.Tensor], None, None]:
         tensorizer_args = self.tensorizer_config._construct_tensorizer_args()
         return tensorizer_weights_iterator(tensorizer_args)
 
     def _load_model_unserialized(
-            self, model_config: ModelConfig, device_config: DeviceConfig,
-            lora_config: Optional[LoRAConfig],
-            vision_language_config: Optional[VisionLanguageConfig]
+        self,
+        model_config: ModelConfig,
+        device_config: DeviceConfig,
+        lora_config: Optional[LoRAConfig],
+        vision_language_config: Optional[VisionLanguageConfig],
     ) -> nn.Module:
         """Load an unserialized model with tensorizer.
 
@@ -296,28 +367,28 @@ class TensorizerLoader(BaseModelLoader):
         """
         with set_default_torch_dtype(model_config.dtype):
             with torch.device(device_config.device):
-                model = _initialize_model(model_config, self.load_config,
-                                          lora_config, vision_language_config)
+                model = _initialize_model(model_config, self.load_config, lora_config, vision_language_config)
 
             model.load_weights(self._get_weights_iterator())
         return model.eval()
 
     def _load_model_serialized(
-            self, model_config: ModelConfig, device_config: DeviceConfig,
-            lora_config: Optional[LoRAConfig],
-            vision_language_config: Optional[VisionLanguageConfig]
+        self,
+        model_config: ModelConfig,
+        device_config: DeviceConfig,
+        lora_config: Optional[LoRAConfig],
+        vision_language_config: Optional[VisionLanguageConfig],
     ) -> nn.Module:
         """Load a serialized model with tensorizer.
 
         See the examples/tensorize_vllm_model.py example "
-        script for serializing vLLM models."""
+        script for serializing vLLM models.
+        """
         with set_default_torch_dtype(model_config.dtype):
             with torch.device(device_config.device):
                 model_class = get_model_architecture(model_config)[0]
-                linear_method = _get_linear_method(model_config,
-                                                   self.load_config)
-                extra_kwargs = _get_model_initialization_kwargs(
-                    model_class, lora_config, vision_language_config)
+                linear_method = _get_linear_method(model_config, self.load_config)
+                extra_kwargs = _get_model_initialization_kwargs(model_class, lora_config, vision_language_config)
                 extra_kwargs["linear_method"] = linear_method
 
                 tensorizer_config = copy.copy(self.tensorizer_config)
@@ -328,26 +399,25 @@ class TensorizerLoader(BaseModelLoader):
                 model = load_with_tensorizer(tensorizer_config, **extra_kwargs)
         return model.eval()
 
-    def load_model(self, *, model_config: ModelConfig,
-                   device_config: DeviceConfig,
-                   lora_config: Optional[LoRAConfig],
-                   vision_language_config: Optional[VisionLanguageConfig],
-                   parallel_config: ParallelConfig,
-                   scheduler_config: SchedulerConfig) -> nn.Module:
+    def load_model(
+        self,
+        *,
+        model_config: ModelConfig,
+        device_config: DeviceConfig,
+        lora_config: Optional[LoRAConfig],
+        vision_language_config: Optional[VisionLanguageConfig],
+        parallel_config: ParallelConfig,
+        scheduler_config: SchedulerConfig,
+    ) -> nn.Module:
         self._verify_config(model_config, parallel_config)
 
         if is_vllm_serialized_tensorizer(self.tensorizer_config):
-            return self._load_model_serialized(model_config, device_config,
-                                               lora_config,
-                                               vision_language_config)
-        return self._load_model_unserialized(model_config, device_config,
-                                             lora_config,
-                                             vision_language_config)
+            return self._load_model_serialized(model_config, device_config, lora_config, vision_language_config)
+        return self._load_model_unserialized(model_config, device_config, lora_config, vision_language_config)
 
 
 def get_model_loader(load_config: LoadConfig) -> BaseModelLoader:
     """Get a model loader based on the load format."""
-
     if isinstance(load_config.load_format, type):
         return load_config.load_format(load_config)
 

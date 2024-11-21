@@ -24,24 +24,32 @@ class _Backend(enum.Enum):
 @lru_cache(maxsize=None)
 def get_attn_backend(dtype: torch.dtype) -> Type[AttentionBackend]:
     backend = _which_attn_to_use(dtype)
+
     if backend == _Backend.FLASH_ATTN:
         logger.info("Using FlashAttention backend.")
         from vllm.attention.backends.flash_attn import (  # noqa: F401
-            FlashAttentionBackend)
+            FlashAttentionBackend,
+        )
+
         return FlashAttentionBackend
     elif backend == _Backend.XFORMERS:
         logger.info("Using XFormers backend.")
         from vllm.attention.backends.xformers import (  # noqa: F401
-            XFormersBackend)
+            XFormersBackend,
+        )
+
         return XFormersBackend
     elif backend == _Backend.ROCM_FLASH:
         logger.info("Using ROCmFlashAttention backend.")
         from vllm.attention.backends.rocm_flash_attn import (  # noqa: F401
-            ROCmFlashAttentionBackend)
+            ROCmFlashAttentionBackend,
+        )
+
         return ROCmFlashAttentionBackend
     elif backend == _Backend.TORCH_SDPA:
         logger.info("Using Torch SDPA backend.")
         from vllm.attention.backends.torch_sdpa import TorchSDPABackend
+
         return TorchSDPABackend
     else:
         raise ValueError("Invalid attention backend.")
@@ -62,13 +70,11 @@ def _which_attn_to_use(dtype: torch.dtype) -> _Backend:
     # NVIDIA GPUs.
     if torch.cuda.get_device_capability()[0] < 8:
         # Volta and Turing NVIDIA GPUs.
-        logger.info("Cannot use FlashAttention backend for Volta and Turing "
-                    "GPUs.")
+        logger.info("Cannot use FlashAttention backend for Volta and Turing " "GPUs.")
         return _Backend.XFORMERS
 
     if dtype not in (torch.float16, torch.bfloat16):
-        logger.info("Cannot use FlashAttention backend for dtype other than "
-                    "torch.float16 or torch.bfloat16.")
+        logger.info("Cannot use FlashAttention backend for dtype other than " "torch.float16 or torch.bfloat16.")
         return _Backend.XFORMERS
 
     try:
@@ -76,7 +82,8 @@ def _which_attn_to_use(dtype: torch.dtype) -> _Backend:
     except ImportError:
         logger.info(
             "Cannot use FlashAttention backend because the flash_attn package "
-            "is not found. Please install it for better performance.")
+            "is not found. Please install it for better performance."
+        )
         return _Backend.XFORMERS
 
     backend_by_env_var = os.getenv(VLLM_ATTENTION_BACKEND)
