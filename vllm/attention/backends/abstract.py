@@ -54,10 +54,7 @@ class AttentionMetadataPerStage:
         """Similar to dataclasses.asdict, but avoids deepcopying."""
         # Note that if we add dataclasses as fields, they will need
         # similar handling.
-        return {
-            field.name: getattr(self, field.name)
-            for field in fields(self)
-        }
+        return {field.name: getattr(self, field.name) for field in fields(self)}
 
 
 T = TypeVar("T", bound=AttentionMetadataPerStage)
@@ -66,6 +63,7 @@ T = TypeVar("T", bound=AttentionMetadataPerStage)
 @dataclass
 class AttentionMetadata(Generic[T]):
     """Attention metadata for prefill and decode batched together."""
+
     # Total number of prefill requests.
     num_prefills: int
     # Number of prefill tokens.
@@ -86,6 +84,7 @@ class AttentionMetadata(Generic[T]):
     slot_mapping: torch.Tensor
     # The kv cache's data type.
     kv_cache_dtype: str
+    is_init_run: bool = False
 
     def __post_init__(self):
         if self.num_prefill_tokens > 0:
@@ -96,7 +95,6 @@ class AttentionMetadata(Generic[T]):
 
 
 class AttentionImpl(ABC):
-
     @abstractmethod
     def __init__(
         self,

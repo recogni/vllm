@@ -932,6 +932,7 @@ class ModelRunner:
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
         kv_caches: List[torch.Tensor],
+        is_init_run: bool = False,
     ) -> Optional[SamplerOutput]:
         (
             input_tokens,
@@ -942,6 +943,8 @@ class ModelRunner:
             lora_mapping,
             multi_modal_input,
         ) = self.prepare_input_tensors(seq_group_metadata_list)
+
+        attn_metadata.is_init_run = is_init_run
 
         if self.lora_config:
             self.set_active_loras(lora_requests, lora_mapping)
@@ -1048,7 +1051,7 @@ class ModelRunner:
         # Run the model with the dummy inputs.
         num_layers = self.model_config.get_num_layers(self.parallel_config)
         kv_caches = [None] * num_layers
-        self.execute_model(seqs, kv_caches)
+        self.execute_model(seqs, kv_caches, is_init_run=True)
         torch.cuda.synchronize()
         return
 

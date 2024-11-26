@@ -19,11 +19,20 @@ class _Backend(enum.Enum):
     XFORMERS = enum.auto()
     ROCM_FLASH = enum.auto()
     TORCH_SDPA = enum.auto()
+    RECOGNI = enum.auto()
 
 
 @lru_cache(maxsize=None)
 def get_attn_backend(dtype: torch.dtype) -> Type[AttentionBackend]:
     backend = _which_attn_to_use(dtype)
+
+    if backend == _Backend.RECOGNI:
+        logger.info("Using Recogni Flash Attention backend.")
+        from vllm.attention.backends.recogni_flash_attention import (  # noqa: F401
+            RecogniFlashAttentionBackend,
+        )
+
+        return RecogniFlashAttentionBackend
 
     if backend == _Backend.FLASH_ATTN:
         logger.info("Using FlashAttention backend.")
@@ -70,11 +79,16 @@ def _which_attn_to_use(dtype: torch.dtype) -> _Backend:
     # NVIDIA GPUs.
     if torch.cuda.get_device_capability()[0] < 8:
         # Volta and Turing NVIDIA GPUs.
-        logger.info("Cannot use FlashAttention backend for Volta and Turing " "GPUs.")
+        logger.info(
+            "Cannot use FlashAttention backend for Volta and Turing " "GPUs."
+        )
         return _Backend.XFORMERS
 
     if dtype not in (torch.float16, torch.bfloat16):
-        logger.info("Cannot use FlashAttention backend for dtype other than " "torch.float16 or torch.bfloat16.")
+        logger.info(
+            "Cannot use FlashAttention backend for dtype other than "
+            "torch.float16 or torch.bfloat16."
+        )
         return _Backend.XFORMERS
 
     try:

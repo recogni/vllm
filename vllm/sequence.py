@@ -1,4 +1,5 @@
 """Sequence and its related classes."""
+
 import copy
 import enum
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ class Logprob:
         rank: The vocab rank of chosen token (>=1)
         decoded_token: The decoded chosen token index
     """
+
     logprob: float
     rank: Optional[int] = None
     decoded_token: Optional[str] = None
@@ -34,6 +36,7 @@ SampleLogprobs = List[Dict[int, Logprob]]
 
 class SequenceStatus(enum.Enum):
     """Status of a sequence."""
+
     WAITING = enum.auto()
     RUNNING = enum.auto()
     SWAPPED = enum.auto()
@@ -85,6 +88,7 @@ class RequestMetrics:
         time_in_queue: The time the request spent in the queue.
         finished_time: The time when the request was finished.
     """
+
     arrival_time: float
     last_token_time: float
     first_scheduled_time: Optional[float]
@@ -146,7 +150,9 @@ class SequenceData:
         """Update number of tokens computed so far."""
         self._num_computed_tokens += num_new_computed_tokens
         assert self._num_computed_tokens <= self.get_len(), (
-            self._num_computed_tokens, self.get_len())
+            self._num_computed_tokens,
+            self.get_len(),
+        )
         # If all tokens are computed, it means it is in decoding phase.
         if self.get_num_uncomputed_tokens() == 0:
             self._stage = SequenceStage.DECODE
@@ -182,10 +188,12 @@ class SequenceData:
         return self._stage
 
     def __repr__(self) -> str:
-        return (f"SequenceData("
-                f"prompt_token_ids={self.prompt_token_ids}, "
-                f"output_token_ids={self.output_token_ids}, "
-                f"cumulative_logprob={self.cumulative_logprob})")
+        return (
+            f"SequenceData("
+            f"prompt_token_ids={self.prompt_token_ids}, "
+            f"output_token_ids={self.output_token_ids}, "
+            f"cumulative_logprob={self.cumulative_logprob})"
+        )
 
 
 class Sequence:
@@ -238,8 +246,11 @@ class Sequence:
     def get_output_text_to_return(self, buffer_length: int):
         # We return the full output text if the sequence is finished.
         truncate = buffer_length and not self.is_finished()
-        return self.output_text[:-buffer_length] if truncate else (
-            self.output_text)
+        return (
+            self.output_text[:-buffer_length]
+            if truncate
+            else (self.output_text)
+        )
 
     def hash_of_block(self, logical_idx: int) -> int:
         # TODO This can produce incorrect hash when block size > prompt size
@@ -249,7 +260,8 @@ class Sequence:
         # this in the future.
         num_tokens = self.num_hashed_tokens_of_block(logical_idx)
         return hash(
-            (tuple(self.data.get_token_ids()[0:num_tokens]), self.lora_int_id))
+            (tuple(self.data.get_token_ids()[0:num_tokens]), self.lora_int_id)
+        )
 
     def num_hashed_tokens_of_block(self, logical_idx: int):
         return logical_idx * self.block_size + self.block_size
@@ -277,8 +289,9 @@ class Sequence:
                 last_block = self.logical_token_blocks[-1]
 
             num_empty_slots = last_block.get_num_empty_slots()
-            last_block.append_tokens(token_ids[cursor:cursor +
-                                               num_empty_slots])
+            last_block.append_tokens(
+                token_ids[cursor : cursor + num_empty_slots]
+            )
             cursor += num_empty_slots
 
     def append_token_id(
@@ -315,10 +328,12 @@ class Sequence:
     def get_cumulative_logprob(self) -> float:
         return self.data.cumulative_logprob
 
-    def get_beam_search_score(self,
-                              length_penalty: float = 1.0,
-                              seq_len: Optional[int] = None,
-                              eos_token_id: Optional[int] = None) -> float:
+    def get_beam_search_score(
+        self,
+        length_penalty: float = 1.0,
+        seq_len: Optional[int] = None,
+        eos_token_id: Optional[int] = None,
+    ) -> float:
         """Calculate the beam search score with length penalty.
 
         Adapted from
@@ -329,8 +344,10 @@ class Sequence:
             seq_len = self.get_len()
             # NOTE: HF implementation does not count the EOS token
             # towards the length, we align with that here for testing.
-            if (eos_token_id is not None
-                    and self.get_last_token_id() == eos_token_id):
+            if (
+                eos_token_id is not None
+                and self.get_last_token_id() == eos_token_id
+            ):
                 seq_len -= 1
         return self.get_cumulative_logprob() / (seq_len**length_penalty)
 
@@ -357,9 +374,11 @@ class Sequence:
         return self.data.stage == SequenceStage.PREFILL
 
     def __repr__(self) -> str:
-        return (f"Sequence(seq_id={self.seq_id}, "
-                f"status={self.status.name}, "
-                f"num_blocks={len(self.logical_token_blocks)})")
+        return (
+            f"Sequence(seq_id={self.seq_id}, "
+            f"status={self.status.name}, "
+            f"num_blocks={len(self.logical_token_blocks)})"
+        )
 
 
 @dataclass
@@ -372,12 +391,12 @@ class SequenceGroupState:
 
 class MultiModalData:
     """Multi modal request.
-    
+
     Args:
         type: The data type.
         data: The actual data.
         The required shape and semantic meaning of it depends on the vision
-        language config of the hosted model. 
+        language config of the hosted model.
         See `VisionLanguageConfig` in `config.py`.
     """
 
@@ -413,11 +432,13 @@ class SequenceGroup:
         self.request_id = request_id
         self.seqs_dict = {seq.seq_id: seq for seq in seqs}
         self.sampling_params = sampling_params
-        self.metrics = RequestMetrics(arrival_time=arrival_time,
-                                      last_token_time=arrival_time,
-                                      first_scheduled_time=None,
-                                      first_token_time=None,
-                                      time_in_queue=None)
+        self.metrics = RequestMetrics(
+            arrival_time=arrival_time,
+            last_token_time=arrival_time,
+            first_scheduled_time=None,
+            first_token_time=None,
+            time_in_queue=None,
+        )
         self.lora_request = lora_request
         self.prompt_logprobs: Optional[PromptLogprobs] = None
         self.state = SequenceGroupState()
@@ -482,14 +503,16 @@ class SequenceGroup:
         self,
         status: Optional[SequenceStatus] = None,
     ) -> List[Sequence]:
-        return list(self.seqs_dict.values()) if status is None else [
-            seq for seq in self.seqs_dict.values() if seq.status == status
-        ]
+        return (
+            list(self.seqs_dict.values())
+            if status is None
+            else [
+                seq for seq in self.seqs_dict.values() if seq.status == status
+            ]
+        )
 
     def get_unfinished_seqs(self) -> List[Sequence]:
-        return [
-            seq for seq in self.seqs_dict.values() if not seq.is_finished()
-        ]
+        return [seq for seq in self.seqs_dict.values() if not seq.is_finished()]
 
     def get_finished_seqs(self) -> List[Sequence]:
         return [seq for seq in self.seqs_dict.values() if seq.is_finished()]
@@ -544,9 +567,11 @@ class SequenceGroup:
         return self.get_seqs()[0].is_prefill()
 
     def __repr__(self) -> str:
-        return (f"SequenceGroup(request_id={self.request_id}, "
-                f"sampling_params={self.sampling_params}, "
-                f"num_seqs={len(self.seqs_dict)})")
+        return (
+            f"SequenceGroup(request_id={self.request_id}, "
+            f"sampling_params={self.sampling_params}, "
+            f"num_seqs={len(self.seqs_dict)})"
+        )
 
 
 class SequenceGroupMetadata:
@@ -628,15 +653,19 @@ class SequenceOutput:
         self.logprobs = logprobs
 
     def __repr__(self) -> str:
-        return (f"SequenceOutput(parent_seq_id={self.parent_seq_id}, "
-                f"output_token={self.output_token}, "
-                f"logprobs={self.logprobs})")
+        return (
+            f"SequenceOutput(parent_seq_id={self.parent_seq_id}, "
+            f"output_token={self.output_token}, "
+            f"logprobs={self.logprobs})"
+        )
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, SequenceOutput):
             raise NotImplementedError()
-        equal = (self.parent_seq_id == other.parent_seq_id
-                 and self.output_token == other.output_token)
+        equal = (
+            self.parent_seq_id == other.parent_seq_id
+            and self.output_token == other.output_token
+        )
         log_probs_equal = other.logprobs == self.logprobs
         return equal and log_probs_equal
 
@@ -653,14 +682,18 @@ class SequenceGroupOutput:
         self.prompt_logprobs = prompt_logprobs
 
     def __repr__(self) -> str:
-        return (f"SequenceGroupOutput(samples={self.samples}, "
-                f"prompt_logprobs={self.prompt_logprobs})")
+        return (
+            f"SequenceGroupOutput(samples={self.samples}, "
+            f"prompt_logprobs={self.prompt_logprobs})"
+        )
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, SequenceGroupOutput):
             raise NotImplementedError()
-        return (self.samples == other.samples
-                and self.prompt_logprobs == other.prompt_logprobs)
+        return (
+            self.samples == other.samples
+            and self.prompt_logprobs == other.prompt_logprobs
+        )
 
 
 @dataclass
@@ -693,18 +726,25 @@ class SamplerOutput:
         return len(self.outputs)
 
     def __eq__(self, other: object):
-        return isinstance(other,
-                          self.__class__) and self.outputs == other.outputs
+        return (
+            isinstance(other, self.__class__) and self.outputs == other.outputs
+        )
 
     def __repr__(self) -> str:
-        """Show the shape of a tensor instead of its values to reduce noise.
-        """
-        sampled_token_probs_repr = ("None" if self.sampled_token_probs is None
-                                    else self.sampled_token_probs.shape)
-        sampled_token_ids_repr = ("None" if self.sampled_token_ids is None else
-                                  self.sampled_token_ids.shape)
+        """Show the shape of a tensor instead of its values to reduce noise."""
+        sampled_token_probs_repr = (
+            "None"
+            if self.sampled_token_probs is None
+            else self.sampled_token_probs.shape
+        )
+        sampled_token_ids_repr = (
+            "None"
+            if self.sampled_token_ids is None
+            else self.sampled_token_ids.shape
+        )
         return (
             f"SamplerOutput(outputs={self.outputs}, "
             f"sampled_token_probs={sampled_token_probs_repr}, "
             f"sampled_token_ids={sampled_token_ids_repr}, "
-            f"spec_decode_worker_metrics={self.spec_decode_worker_metrics})")
+            f"spec_decode_worker_metrics={self.spec_decode_worker_metrics})"
+        )

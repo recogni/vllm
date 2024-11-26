@@ -39,7 +39,9 @@ class TorchSDPABackend(AttentionBackend):
         num_kv_heads: int,
         head_size: int,
     ) -> Tuple[int, ...]:
-        return PagedAttention.get_kv_cache_shape(num_blocks, block_size, num_kv_heads, head_size)
+        return PagedAttention.get_kv_cache_shape(
+            num_blocks, block_size, num_kv_heads, head_size
+        )
 
     @staticmethod
     def swap_blocks(
@@ -58,7 +60,9 @@ class TorchSDPABackend(AttentionBackend):
 
 
 @dataclass
-class TorchSDPAMetadata(AttentionMetadata, PagedAttentionMetadata, AttentionMetadataPerStage):
+class TorchSDPAMetadata(
+    AttentionMetadata, PagedAttentionMetadata, AttentionMetadataPerStage
+):
     """Metadata for TorchSDPABackend."""
 
     # Currently, input sequences can only contain all prompts
@@ -95,7 +99,9 @@ class TorchSDPABackendImpl(AttentionImpl):
             assert len(alibi_slopes) == num_heads
             alibi_slopes = torch.tensor(alibi_slopes, dtype=torch.float32)
         self.alibi_slopes = alibi_slopes
-        self.need_mask = self.alibi_slopes is not None or self.sliding_window is not None
+        self.need_mask = (
+            self.alibi_slopes is not None or self.sliding_window is not None
+        )
 
         assert self.num_heads % self.num_kv_heads == 0
         self.num_queries_per_kv = self.num_heads // self.num_kv_heads
@@ -133,9 +139,17 @@ class TorchSDPABackendImpl(AttentionImpl):
         value = value.view(-1, self.num_kv_heads, self.head_size)
 
         if kv_cache is not None:
-            key_cache, value_cache = PagedAttention.split_kv_cache(kv_cache, self.num_kv_heads, self.head_size)
+            key_cache, value_cache = PagedAttention.split_kv_cache(
+                kv_cache, self.num_kv_heads, self.head_size
+            )
             PagedAttention.write_to_paged_cache(
-                key, value, key_cache, value_cache, attn_metadata.slot_mapping, attn_metadata.kv_cache_dtype, kv_scale
+                key,
+                value,
+                key_cache,
+                value_cache,
+                attn_metadata.slot_mapping,
+                attn_metadata.kv_cache_dtype,
+                kv_scale,
             )
 
         if attn_metadata.is_prompt:
@@ -143,14 +157,22 @@ class TorchSDPABackendImpl(AttentionImpl):
             if kv_cache is None or attn_metadata.block_tables.numel() == 0:
                 if self.num_kv_heads != self.num_heads:
                     key = key.repeat_interleave(self.num_queries_per_kv, dim=1)
-                    value = value.repeat_interleave(self.num_queries_per_kv, dim=1)
+                    value = value.repeat_interleave(
+                        self.num_queries_per_kv, dim=1
+                    )
 
                 if attn_metadata.attn_bias is None:
                     if self.alibi_slopes is not None:
-                        att_masks = _make_alibi_bias(self.alibi_slopes, query.dtype, attn_metadata.prompt_lens)  # type: ignore
+                        att_masks = _make_alibi_bias(
+                            self.alibi_slopes,
+                            query.dtype,
+                            attn_metadata.prompt_lens,
+                        )  # type: ignore
                     elif self.sliding_window is not None:
                         att_masks = _make_sliding_window_bias(
-                            attn_metadata.prompt_lens, self.sliding_window, query.dtype
+                            attn_metadata.prompt_lens,
+                            self.sliding_window,
+                            query.dtype,
                         )  # type: ignore
                     else:
                         att_masks = [None] * len(attn_metadata.prompt_lens)
@@ -161,8 +183,13 @@ class TorchSDPABackendImpl(AttentionImpl):
                 value = value.movedim(0, value.dim() - 2)
 
                 start = 0
-                output = torch.empty((num_tokens, self.num_heads, self.head_size), dtype=query.dtype)
-                for prompt_len, mask in zip(attn_metadata.prompt_lens, attn_metadata.attn_bias):
+                output = torch.empty(
+                    (num_tokens, self.num_heads, self.head_size),
+                    dtype=query.dtype,
+                )
+                for prompt_len, mask in zip(
+                    attn_metadata.prompt_lens, attn_metadata.attn_bias
+                ):
                     end = start + prompt_len
                     sub_out = scaled_dot_product_attention(
                         query[:, start:end, :],
@@ -177,7 +204,9 @@ class TorchSDPABackendImpl(AttentionImpl):
                     start = end
             else:
                 # prefix-enabled attention
-                raise RuntimeError("Torch SDPA backend doesn't support prefix decoding.")
+                raise RuntimeError(
+                    "Torch SDPA backend doesn't support prefix decoding."
+                )
 
         else:
             # Decoding run.
@@ -217,7 +246,11 @@ def _make_alibi_bias(
         num_heads = alibi_slopes.shape[0]
         bias = bias[None, :].repeat((num_heads, 1, 1))
         bias.mul_(alibi_slopes[:, None, None])
-        inf_mask = torch.empty((1, prompt_len, prompt_len), dtype=bias.dtype).fill_(-torch.inf).triu_(diagonal=1)
+        inf_mask = (
+            torch.empty((1, prompt_len, prompt_len), dtype=bias.dtype)
+            .fill_(-torch.inf)
+            .triu_(diagonal=1)
+        )
         attn_biases.append((bias + inf_mask).to(dtype))
 
     return attn_biases

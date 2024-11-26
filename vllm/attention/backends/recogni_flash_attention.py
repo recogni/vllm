@@ -5,26 +5,27 @@ XFormers backend. The duplicated code will be removed once we use flash-attn or
 flashinfer for all the attention operations.
 """
 
-from dataclasses import dataclass
+from operator import is_
 from typing import Dict, List, Optional, Tuple, Type
 
 import torch
-from flash_attn import flash_attn_varlen_func
 from recogni.torch.nn.modules.attention import FlashAttention as RFlashAttention
 
 from vllm.attention.backends.abstract import (
     AttentionBackend,
     AttentionImpl,
     AttentionMetadata,
-    AttentionMetadataPerStage,
 )
-from vllm.attention.ops.paged_attn import PagedAttention, PagedAttentionMetadata
+from vllm.attention.backends.flash_attn import FlashAttentionMetadata
+from vllm.attention.ops.paged_attn import PagedAttention
+
+import flash_attn
 
 
-class FlashAttentionBackend(AttentionBackend):
+class RecogniFlashAttentionBackend(AttentionBackend):
     @staticmethod
-    def get_impl_cls() -> Type["FlashAttentionImpl"]:
-        return FlashAttentionImpl
+    def get_impl_cls() -> Type["RecogniFlashAttentionImpl"]:
+        return RecogniFlashAttentionImpl
 
     @staticmethod
     def make_metadata(*args, **kwargs) -> "FlashAttentionMetadata":
@@ -57,56 +58,7 @@ class FlashAttentionBackend(AttentionBackend):
         PagedAttention.copy_blocks(kv_caches, src_to_dists)
 
 
-@dataclass
-class FlashAttentionMetadata(AttentionMetadataPerStage, PagedAttentionMetadata):
-    """Metadata for FlashAttentionBackend.
-
-    NOTE: Any python object stored here is not updated when it is
-    cuda-graph replayed. If you have values that need to be changed
-    dynamically, it should be stored in tensor. The tensor has to be
-    updated from `CUDAGraphRunner.forward` API.
-    """
-
-    # Currently, input sequences can only contain all prompts
-    # or all decoding. True if all sequences are prompts.
-    is_prompt: bool
-    # (batch_size,). The prompt length per sequence. None if it is a decoding.
-    prompt_lens: Optional[List[int]]
-    # prompt_lens stored as a tensor.
-    prompt_lens_tensor: Optional[torch.Tensor]
-
-    # NOTE(sang): Definition of context_len, subquery_len, and seqlen.
-    # |---------- N-1 iteration --------|
-    # |---------------- N iteration ---------------------|
-    # |- tokenA -|......................|-- newTokens ---|
-    # |---------- context_len ----------|
-    # |-------------------- seqlen ----------------------|
-    #                                   |- subquery_len -|
-
-    # WARNING(sang): context_len has different definition depending on if it is
-    # prefill vs decoding. When it is prefill, it doesn't include new tokens.
-    # When it is for decoding, it includes a new token.
-
-    # Maximum subquery length in the batch.
-    max_subquery_len: Optional[int]
-    # Maximum prompt length in the batch.
-    max_prompt_len: Optional[int]
-    # (batch_size + 1,). The cumulative subquery lengths of the sequences in
-    # the batch, used to index into subquery. E.g., if the subquery length
-    # is [4, 6], it is [0, 4, 10].
-    subquery_start_loc: Optional[torch.Tensor]
-    # (batch_size + 1,). The cumulative sequence lengths of the sequences in
-    # the batch, used to index into sequence. E.g., if the sequence length is
-    # [4, 6], it is [0, 4, 10].
-    seq_start_loc: Optional[torch.Tensor]
-
-    # Whether or not if cuda graph is enabled.
-    # Cuda-graph is currently enabled for decoding only.
-    # TODO(woosuk): Move `use_cuda_graph` out since it's unrelated to attention.
-    use_cuda_graph: bool
-
-
-class FlashAttentionImpl(AttentionImpl):
+class RecogniFlashAttentionImpl(AttentionImpl):
     """
     If the input tensors contain prompt tokens, the layout is as follows:
     |<--------------- num_prefill_tokens ----------------->|
@@ -231,98 +183,79 @@ class FlashAttentionImpl(AttentionImpl):
                 # normal attention
                 # When block_tables are not filled, it means q and k are the
                 # prompt, and they have the same length.
-                out = flash_attn_varlen_func(
-                    q=query,
-                    k=key,
-                    v=value,
-                    cu_seqlens_q=prefill_meta.seq_start_loc,
-                    cu_seqlens_k=prefill_meta.seq_start_loc,
-                    max_seqlen_q=prefill_meta.max_prompt_len,
-                    max_seqlen_k=prefill_meta.max_prompt_len,
-                    softmax_scale=self.scale,
-                    causal=True,
-                    window_size=self.sliding_window,
-                    alibi_slopes=self.alibi_slopes,
-                )
+                if attn_metadata.is_init_run:
+                    out = flash_attn.flash_attn_varlen_func(
+                        q=query,
+                        k=key,
+                        v=value,
+                        cu_seqlens_q=prefill_meta.seq_start_loc,
+                        cu_seqlens_k=prefill_meta.seq_start_loc,
+                        max_seqlen_q=prefill_meta.max_prompt_len,
+                        max_seqlen_k=prefill_meta.max_prompt_len,
+                        softmax_scale=self.scale,
+                        causal=True,
+                        window_size=self.sliding_window,
+                        alibi_slopes=self.alibi_slopes,
+                    )
+                else:
+                    _value = value[None, ...]
+                    _value = _value.repeat_interleave(
+                        self.num_queries_per_kv, dim=2
+                    )
+                    _value = _value.transpose(1, 2)
+
+                    _key = key[None, ...]
+                    _key = _key.repeat_interleave(
+                        self.num_queries_per_kv, dim=2
+                    )
+                    _key = _key.transpose(1, 2)
+
+                    _query = query[None, ...]
+                    _query = _query.transpose(1, 2)
+                    out = self.rflash_attn(
+                        q=_query * self.scale**0.5,
+                        k=_key * self.scale**0.5,
+                        v=_value,
+                        is_causal=True,
+                    )[0, ...].movedim(0, 1)
+
                 assert output[:num_prefill_tokens].shape == out.shape
                 output[:num_prefill_tokens] = out
             else:
-                # prefix-enabled attention
-                # TODO(Hai) this triton kernel has regression issue (broke) to
-                # deal with different data types between KV and FP8 KV cache,
-                # to be addressed separately.
-                output[:num_prefill_tokens] = PagedAttention.forward_prefix(
-                    query,
-                    key,
-                    value,
-                    key_cache,
-                    value_cache,
-                    prefill_meta.block_tables,
-                    prefill_meta.subquery_start_loc,
-                    prefill_meta.prompt_lens_tensor,
-                    prefill_meta.context_lens,
-                    prefill_meta.max_subquery_len,
-                    self.alibi_slopes,
-                )
+                raise NotImplementedError("This should not happen.")
         if decode_meta := attn_metadata.decode_metadata:
             # Decoding run.
 
-            if None:
-                # print("query.shape", query.shape)
-                # print("key.shape", key.shape)
-                # print("value.shape", value.shape)
-                _value = (
-                    value_cache[decode_meta.block_tables]
-                    .movedim(-1, 2)  # Move block size to front
-                    .reshape(1, -1, self.num_kv_heads, self.head_size)
-                )
-                _key = (
-                    key_cache[decode_meta.block_tables]
-                    .movedim(-2, 2)  # Move block size to front
-                    .reshape(1, -1, self.num_kv_heads, self.head_size)
-                )
-                decode_query = decode_query.view(
-                    -1, self.num_heads, self.head_size
-                )
-                # _key = _key.view(-1, self.num_kv_heads, self.head_size)
-                # value = value.view(-1, self.num_kv_heads, self.head_size)
-                _key = _key.repeat_interleave(self.num_queries_per_kv, dim=2)
-                _value = _value.repeat_interleave(
-                    self.num_queries_per_kv, dim=2
-                )
-                # decode_query = decode_query.movedim(0, decode_query.dim() - 2)
-                # key = key.movedim(0, key.dim() - 2)
-                # value = value.movedim(0, value.dim() - 2)
-                _decode_query = decode_query[..., None, :]
-                _value = _value.transpose(1, 2)
-                _key = _key.transpose(1, 2)
-                # output[num_prefill_tokens:] = scaled_dot_product_attention(
-                #     _decode_query,
-                #     _key[:, :, : decode_meta.context_lens[0], :],
-                #     _value[:, :, : decode_meta.context_lens[0], :],
-                #     scale=self.scale,
-                # ).squeeze(-2)
-                output[num_prefill_tokens:] = self.rflash_attn(
-                    q=_decode_query * self.scale**0.5,
-                    k=_key[:, :, : decode_meta.context_lens[0], :]
-                    * self.scale**0.5,
-                    v=_value[:, :, : decode_meta.context_lens[0], :],
-                    is_causal=False,
-                ).squeeze(-2)
-            else:
-                output[num_prefill_tokens:] = PagedAttention.forward_decode(
-                    decode_query,
-                    key_cache,
-                    value_cache,
-                    decode_meta.block_tables,
-                    decode_meta.context_lens,
-                    decode_meta.max_context_len,
-                    attn_metadata.kv_cache_dtype,
-                    self.num_kv_heads,
-                    self.scale,
-                    self.alibi_slopes,
-                    kv_scale,
-                )
+            _value = (
+                value_cache[decode_meta.block_tables]
+                .movedim(-1, 2)  # Move block size to front
+                .reshape(1, -1, self.num_kv_heads, self.head_size)
+            )
+            _key = (
+                key_cache[decode_meta.block_tables]
+                .movedim(-2, 2)  # Move block size to front
+                .reshape(1, -1, self.num_kv_heads, self.head_size)
+            )
+            decode_query = decode_query.view(-1, self.num_heads, self.head_size)
+            _key = _key.repeat_interleave(self.num_queries_per_kv, dim=2)
+            _value = _value.repeat_interleave(self.num_queries_per_kv, dim=2)
+            _decode_query = decode_query[..., None, :]
+            _value = _value.transpose(1, 2)
+            _key = _key.transpose(1, 2)
+            output[num_prefill_tokens:] = self.rflash_attn(
+                q=_decode_query * self.scale**0.5,
+                k=_key[:, :, : decode_meta.context_lens[0], :]
+                * self.scale**0.5,
+                v=_value[:, :, : decode_meta.context_lens[0], :],
+                is_causal=False,
+            ).squeeze(-2)
+
+            # output[num_prefill_tokens:] = scaled_dot_product_attention(
+            #     _decode_query,
+            #     _key[:, :, : decode_meta.context_lens[0], :],
+            #     _value[:, :, : decode_meta.context_lens[0], :],
+            #     scale=self.scale,
+            # ).squeeze(-2)
 
         # Reshape the output tensor.
         return output.view(num_tokens, hidden_size)
