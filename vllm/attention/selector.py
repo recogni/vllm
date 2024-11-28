@@ -19,20 +19,29 @@ class _Backend(enum.Enum):
     XFORMERS = enum.auto()
     ROCM_FLASH = enum.auto()
     TORCH_SDPA = enum.auto()
-    RECOGNI = enum.auto()
+    RECOGNI_FLASH_ATTN = enum.auto()
+    RECOGNI_FULL_ATTN = enum.auto()
 
 
 @lru_cache(maxsize=None)
 def get_attn_backend(dtype: torch.dtype) -> Type[AttentionBackend]:
     backend = _which_attn_to_use(dtype)
 
-    if backend == _Backend.RECOGNI:
+    if backend == _Backend.RECOGNI_FLASH_ATTN:
         logger.info("Using Recogni Flash Attention backend.")
         from vllm.attention.backends.recogni_flash_attention import (  # noqa: F401
             RecogniFlashAttentionBackend,
         )
 
         return RecogniFlashAttentionBackend
+
+    if backend == _Backend.RECOGNI_FULL_ATTN:
+        logger.info("Using Recogni Full Attention backend.")
+        from vllm.attention.backends.recogni_full_attention import (  # noqa: F401
+            RecogniFullAttentionBackend,
+        )
+
+        return RecogniFullAttentionBackend
 
     if backend == _Backend.FLASH_ATTN:
         logger.info("Using FlashAttention backend.")
