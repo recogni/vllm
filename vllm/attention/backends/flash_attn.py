@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple, Type
 import torch
 from flash_attn import flash_attn_varlen_func
 from recogni.torch.nn.modules.attention import FlashAttention as RFlashAttention
+from torch.nn.functional import scaled_dot_product_attention
 
 from vllm.attention.backends.abstract import (
     AttentionBackend,
@@ -296,19 +297,18 @@ class FlashAttentionImpl(AttentionImpl):
                 _decode_query = decode_query[..., None, :]
                 _value = _value.transpose(1, 2)
                 _key = _key.transpose(1, 2)
-                # output[num_prefill_tokens:] = scaled_dot_product_attention(
-                #     _decode_query,
-                #     _key[:, :, : decode_meta.context_lens[0], :],
-                #     _value[:, :, : decode_meta.context_lens[0], :],
-                #     scale=self.scale,
-                # ).squeeze(-2)
-                output[num_prefill_tokens:] = self.rflash_attn(
-                    q=_decode_query * self.scale**0.5,
-                    k=_key[:, :, : decode_meta.context_lens[0], :]
-                    * self.scale**0.5,
-                    v=_value[:, :, : decode_meta.context_lens[0], :],
-                    is_causal=False,
-                ).squeeze(-2)
+                with torch.backends.cuda.sdp_kernel(
+                    enable_flash=True,
+                    enable_math=True,
+                    enable_mem_efficient=True,
+                ):
+                    output[num_prefill_tokens:] = scaled_dot_product_attention(
+                        _decode_query,
+                        _key[:, :, : decode_meta.context_lens[0], :],
+                        _value[:, :, : decode_meta.context_lens[0], :],
+                        scale=self.scale,
+                    ).squeeze(-2)
+
             else:
                 output[num_prefill_tokens:] = PagedAttention.forward_decode(
                     decode_query,

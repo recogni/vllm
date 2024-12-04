@@ -24,6 +24,7 @@ from vllm.config import (
     VisionLanguageConfig,
 )
 from vllm.logger import init_logger
+from vllm.model_executor.layers import layernorm, recogni_rms_norm
 from vllm.model_executor.layers.linear import LinearMethodBase, set_weight_attrs
 from vllm.model_executor.model_loader.tensorizer import (
     TensorizerConfig,
@@ -186,9 +187,19 @@ def _initialize_model(
     model_class = get_model_architecture(model_config)[0]
     linear_method = _get_linear_method(model_config, load_config)
 
+    if model_config.norm_mode and model_config.norm_mode.lower() == "recogni":
+        logger.info("Using RecogniRMSNorm as norm method.")
+        norm = recogni_rms_norm.RecogniRMSNorm
+    elif model_config.norm_mode is None:
+        logger.info("Using casual RMSNorm as norm method.")
+        norm = layernorm.RMSNorm
+    else:
+        raise ValueError("Unknown norm mode: {model_config.norm_mode}")
+
     return model_class(
         config=model_config.hf_config,
         linear_method=linear_method,
+        norm=norm,
         **_get_model_initialization_kwargs(
             model_class, lora_config, vision_language_config
         ),
