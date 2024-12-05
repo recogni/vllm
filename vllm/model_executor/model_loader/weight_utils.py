@@ -1,4 +1,5 @@
 """Utilities for downloading and initializing model weights."""
+
 import fnmatch
 import glob
 import hashlib
@@ -6,7 +7,8 @@ import json
 import os
 import tempfile
 from collections import defaultdict
-from typing import Any, Generator, Iterable, List, Optional, Tuple
+from collections.abc import Generator, Iterable
+from typing import Any, List, Optional, Tuple
 
 import filelock
 import huggingface_hub.constants
@@ -18,8 +20,7 @@ from tqdm.auto import tqdm
 
 from vllm.config import LoadConfig, ModelConfig
 from vllm.logger import init_logger
-from vllm.model_executor.layers.quantization import (QuantizationConfig,
-                                                     get_quantization_config)
+from vllm.model_executor.layers.quantization import QuantizationConfig, get_quantization_config
 from vllm.model_executor.layers.quantization.schema import QuantParamSchema
 
 logger = init_logger(__name__)
@@ -32,12 +33,12 @@ temp_dir = tempfile.gettempdir()
 
 
 def enable_hf_transfer():
-    """automatically activates hf_transfer
-    """
+    """Automatically activates hf_transfer"""
     if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
         try:
             # enable hf hub transfer if available
             import hf_transfer  # type: ignore # noqa
+
             huggingface_hub.constants.HF_HUB_ENABLE_HF_TRANSFER = True
         except ImportError:
             pass
@@ -47,7 +48,6 @@ enable_hf_transfer()
 
 
 class DisabledTqdm(tqdm):
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs, disable=True)
 
@@ -60,8 +60,7 @@ def get_lock(model_name_or_path: str, cache_dir: Optional[str] = None):
     # add hash to avoid conflict with old users' lock files
     lock_file_name = hash_name + model_name + ".lock"
     # mode 0o666 is required for the filelock to be shared across users
-    lock = filelock.FileLock(os.path.join(lock_dir, lock_file_name),
-                             mode=0o666)
+    lock = filelock.FileLock(os.path.join(lock_dir, lock_file_name), mode=0o666)
     return lock
 
 
@@ -114,12 +113,10 @@ def convert_bin_to_safetensor_file(
 
 
 # TODO(woosuk): Move this to other place.
-def get_quant_config(model_config: ModelConfig,
-                     load_config: LoadConfig) -> QuantizationConfig:
+def get_quant_config(model_config: ModelConfig, load_config: LoadConfig) -> QuantizationConfig:
     quant_cls = get_quantization_config(model_config.quantization)
     # Read the quantization config from the HF model config, if available.
-    hf_quant_config = getattr(model_config.hf_config, "quantization_config",
-                              None)
+    hf_quant_config = getattr(model_config.hf_config, "quantization_config", None)
     if hf_quant_config is not None:
         return quant_cls.from_config(hf_quant_config)
     model_name_or_path = model_config.model
@@ -127,11 +124,13 @@ def get_quant_config(model_config: ModelConfig,
     if not is_local:
         # Download the config files.
         with get_lock(model_name_or_path, load_config.download_dir):
-            hf_folder = snapshot_download(model_name_or_path,
-                                          revision=model_config.revision,
-                                          allow_patterns="*.json",
-                                          cache_dir=load_config.download_dir,
-                                          tqdm_class=DisabledTqdm)
+            hf_folder = snapshot_download(
+                model_name_or_path,
+                revision=model_config.revision,
+                allow_patterns="*.json",
+                cache_dir=load_config.download_dir,
+                tqdm_class=DisabledTqdm,
+            )
     else:
         hf_folder = model_name_or_path
 
@@ -143,30 +142,23 @@ def get_quant_config(model_config: ModelConfig,
 
     config_files = glob.glob(os.path.join(hf_folder, "*.json"))
 
-    quant_config_files = [
-        f for f in config_files if any(
-            f.endswith(x) for x in possible_config_filenames)
-    ]
+    quant_config_files = [f for f in config_files if any(f.endswith(x) for x in possible_config_filenames)]
     if len(quant_config_files) == 0:
-        raise ValueError(
-            f"Cannot find the config file for {model_config.quantization}")
+        raise ValueError(f"Cannot find the config file for {model_config.quantization}")
     if len(quant_config_files) > 1:
-        raise ValueError(
-            f"Found multiple config files for {model_config.quantization}: "
-            f"{quant_config_files}")
+        raise ValueError(f"Found multiple config files for {model_config.quantization}: " f"{quant_config_files}")
 
     quant_config_file = quant_config_files[0]
-    with open(quant_config_file, "r") as f:
+    with open(quant_config_file) as f:
         config = json.load(f)
     return quant_cls.from_config(config)
 
 
-def download_weights_from_hf(model_name_or_path: str,
-                             cache_dir: Optional[str],
-                             allow_patterns: List[str],
-                             revision: Optional[str] = None) -> str:
+def download_weights_from_hf(
+    model_name_or_path: str, cache_dir: Optional[str], allow_patterns: List[str], revision: Optional[str] = None
+) -> str:
     """Download model weights from Hugging Face Hub.
-    
+
     Args:
         model_name_or_path (str): The model name or path.
         cache_dir (Optional[str]): The cache directory to store the model
@@ -176,7 +168,8 @@ def download_weights_from_hf(model_name_or_path: str,
             downloaded.
         revision (Optional[str]): The revision of the model.
 
-    Returns:
+    Returns
+    -------
         str: The path to the downloaded model weights.
     """
     # Before we download we look at that is available:
@@ -193,17 +186,21 @@ def download_weights_from_hf(model_name_or_path: str,
     logger.info(f"Using model weights format {allow_patterns}")
     # Use file lock to prevent multiple processes from
     # downloading the same model weights at the same time.
+    cpu_count = os.cpu_count()
     with get_lock(model_name_or_path, cache_dir):
-        hf_folder = snapshot_download(model_name_or_path,
-                                      allow_patterns=allow_patterns,
-                                      cache_dir=cache_dir,
-                                      tqdm_class=DisabledTqdm,
-                                      revision=revision)
+        hf_folder = snapshot_download(
+            model_name_or_path,
+            allow_patterns=allow_patterns,
+            cache_dir=cache_dir,
+            #   tqdm_class=DisabledTqdm,
+            revision=revision,
+            max_workers=cpu_count - 1 if cpu_count is not None else 8,
+        )
+    logger.info("Done downloading")
     return hf_folder
 
 
-def filter_files_not_needed_for_inference(
-        hf_weights_files: List[str]) -> List[str]:
+def filter_files_not_needed_for_inference(hf_weights_files: List[str]) -> List[str]:
     """
     Exclude files that are not needed for inference.
 
@@ -216,16 +213,12 @@ def filter_files_not_needed_for_inference(
         "scheduler.pt",
         "scaler.pt",
     ]
-    hf_weights_files = [
-        f for f in hf_weights_files
-        if not any(f.endswith(x) for x in blacklist)
-    ]
+    hf_weights_files = [f for f in hf_weights_files if not any(f.endswith(x) for x in blacklist)]
     return hf_weights_files
 
 
 def np_cache_weights_iterator(
-    model_name_or_path: str, cache_dir: Optional[str], hf_folder: str,
-    hf_weights_files: List[str]
+    model_name_or_path: str, cache_dir: Optional[str], hf_folder: str, hf_weights_files: List[str]
 ) -> Generator[Tuple[str, torch.Tensor], None, None]:
     """Iterate over the weights in the model np files.
 
@@ -251,7 +244,7 @@ def np_cache_weights_iterator(
             with open(weight_names_file, "w") as f:
                 json.dump(weight_names, f)
 
-    with open(weight_names_file, "r") as f:
+    with open(weight_names_file) as f:
         weight_names = json.load(f)
 
     for name in weight_names:
@@ -261,20 +254,16 @@ def np_cache_weights_iterator(
         yield name, torch.from_numpy(param)
 
 
-def safetensors_weights_iterator(
-    hf_weights_files: List[str]
-) -> Generator[Tuple[str, torch.Tensor], None, None]:
+def safetensors_weights_iterator(hf_weights_files: List[str]) -> Generator[Tuple[str, torch.Tensor], None, None]:
     """Iterate over the weights in the model safetensor files."""
     for st_file in hf_weights_files:
         with safe_open(st_file, framework="pt") as f:
-            for name in f.keys():  # noqa: SIM118
+            for name in f.keys():
                 param = f.get_tensor(name)
                 yield name, param
 
 
-def pt_weights_iterator(
-    hf_weights_files: List[str]
-) -> Generator[Tuple[str, torch.Tensor], None, None]:
+def pt_weights_iterator(hf_weights_files: List[str]) -> Generator[Tuple[str, torch.Tensor], None, None]:
     """Iterate over the weights in the model bin/pt files."""
     for bin_file in hf_weights_files:
         state = torch.load(bin_file, map_location="cpu")
@@ -285,8 +274,8 @@ def pt_weights_iterator(
 
 
 def kv_cache_scales_loader(
-        filename: str, tp_rank: int, tp_size: int, num_hidden_layers: int,
-        model_type: Optional[str]) -> Iterable[Tuple[int, float]]:
+    filename: str, tp_rank: int, tp_size: int, num_hidden_layers: int, model_type: Optional[str]
+) -> Iterable[Tuple[int, float]]:
     """
     A simple utility to read in KV cache scaling factors that have been
     previously serialized to disk. Used by the model to populate the appropriate
@@ -304,8 +293,7 @@ def kv_cache_scales_loader(
                 "tp_size": tp_size,
             }
             schema_dct = json.load(f)
-            schema = QuantParamSchema.model_validate(schema_dct,
-                                                     context=context)
+            schema = QuantParamSchema.model_validate(schema_dct, context=context)
             layer_scales_map = schema.kv_cache.scaling_factor[tp_rank]
             return layer_scales_map.items()
 
@@ -318,14 +306,16 @@ def kv_cache_scales_loader(
     # This section is reached if and only if any of the excepts are hit
     # Return an empty iterable (list) => no KV cache scales are loaded
     # which ultimately defaults to 1.0 scales
-    logger.warning("Defaulting to KV cache scaling factors = 1.0 "
-                   f"for all layers in TP rank {tp_rank} "
-                   "as an error occurred during loading.")
+    logger.warning(
+        "Defaulting to KV cache scaling factors = 1.0 "
+        f"for all layers in TP rank {tp_rank} "
+        "as an error occurred during loading."
+    )
     return []
 
 
 def convert_pyslice_to_tensor(x: Any) -> torch.Tensor:
-    """convert PySafeSlice object from safetensors to torch.Tensor
+    """Convert PySafeSlice object from safetensors to torch.Tensor
 
     PySafeSlice object supports indexing, which is done before loading the
     actual tensor and can reduce the amount of memory being read into the
@@ -339,8 +329,7 @@ def convert_pyslice_to_tensor(x: Any) -> torch.Tensor:
     return x
 
 
-def default_weight_loader(param: torch.Tensor,
-                          loaded_weight: torch.Tensor) -> None:
+def default_weight_loader(param: torch.Tensor, loaded_weight: torch.Tensor) -> None:
     """Default weight loader."""
     assert param.size() == loaded_weight.size()
     param.data.copy_(loaded_weight)
