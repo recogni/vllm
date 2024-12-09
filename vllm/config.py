@@ -4,6 +4,8 @@ import enum
 import hashlib
 import json
 import warnings
+from collections import Counter
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -12,12 +14,10 @@ from typing import (
     Any,
     Callable,
     ClassVar,
-    Counter,
     Dict,
     Final,
     List,
     Literal,
-    Mapping,
     Optional,
     Set,
     Tuple,
