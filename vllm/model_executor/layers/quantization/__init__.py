@@ -1,7 +1,8 @@
 from typing import Dict, List, Type
 
 from vllm.model_executor.layers.quantization.base_config import (
-    QuantizationConfig)
+    QuantizationConfig,
+)
 
 QUANTIZATION_METHODS: List[str] = [
     "aqlm",
@@ -39,7 +40,8 @@ def get_quantization_config(quantization: str) -> Type[QuantizationConfig]:
     from .awq_marlin import AWQMarlinConfig
     from .bitsandbytes import BitsAndBytesConfig
     from .compressed_tensors.compressed_tensors import (  # noqa: E501
-        CompressedTensorsConfig)
+        CompressedTensorsConfig,
+    )
     from .deepspeedfp import DeepSpeedFPConfig
     from .experts_int8 import ExpertsInt8Config
     from .fbgemm_fp8 import FBGEMMFp8Config
@@ -54,6 +56,7 @@ def get_quantization_config(quantization: str) -> Type[QuantizationConfig]:
     from .modelopt import ModelOptFp8Config
     from .neuron_quant import NeuronQuantConfig
     from .qqq import QQQConfig
+    from .recogni import RecogniConfig
     from .tpu_int8 import Int8TpuConfig
 
     method_to_config: Dict[str, Type[QuantizationConfig]] = {
@@ -79,6 +82,7 @@ def get_quantization_config(quantization: str) -> Type[QuantizationConfig]:
         "experts_int8": ExpertsInt8Config,
         "neuron_quant": NeuronQuantConfig,
         "ipex": IPEXConfig,
+        "recogni": RecogniConfig,
     }
 
     return method_to_config[quantization]
