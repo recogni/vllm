@@ -142,6 +142,7 @@ class Attention(nn.Module, AttentionLayerBase):
         The KV cache is stored inside this class and is accessed via
         `self.kv_cache`.
         """
+        logger.info("HRZ: Attention::__init__()")
         super().__init__()
         if per_layer_sliding_window is not None:
             # per-layer sliding window
@@ -201,6 +202,7 @@ class Attention(nn.Module, AttentionLayerBase):
             )
         else:
             self.attn_backend = attn_backend
+        logger.info("HRZ: Attention::__init__(): self.attn_backend is %s", self.attn_backend)
 
         # prefix caching + batch invariance is currently not supported for
         # FLASHINFER and TRITON_MLA.
@@ -234,6 +236,7 @@ class Attention(nn.Module, AttentionLayerBase):
             kv_sharing_target_layer_name,
             **extra_impl_args,
         )
+        logger.info("HRZ: Attention::__init__(): self.impl is %s", self.impl)
         backend_name = self.attn_backend.get_name()
         self.backend = AttentionBackendEnum.__members__.get(backend_name)
         self.dtype = dtype
@@ -300,6 +303,7 @@ class Attention(nn.Module, AttentionLayerBase):
         context using
         `vllm.forward_context.get_forward_context().attn_metadata`.
         """
+        logger.info("HRZ: Attention::forward(): use_output=%s use_direct_call=%s", self.use_output, self.use_direct_call)
         if self.calculate_kv_scales:
             torch.ops.vllm.maybe_calc_kv_scales(query, key, value, self.layer_name)
         output_dtype = query.dtype
@@ -434,6 +438,7 @@ class MLAAttention(nn.Module, AttentionLayerBase):
         indexer: object | None = None,
         **extra_impl_args,
     ):
+        logger.info("HRZ: MLAAttention:__init__()")
         super().__init__()
         self.num_heads = num_heads
         self.scale = scale
@@ -695,6 +700,7 @@ def unified_attention(
     value: torch.Tensor,
     layer_name: str,
 ) -> torch.Tensor:
+    logger.info("HRZ: maybe_transfer_kv_layer(unified_attention)")
     attn_metadata, self, kv_cache = get_attention_context(layer_name)
     output = self.impl.forward(self, query, key, value, kv_cache, attn_metadata)
 
@@ -728,6 +734,7 @@ def unified_attention_with_output(
     output_block_scale: torch.Tensor | None = None,
 ) -> None:
     attn_metadata, self, kv_cache = get_attention_context(layer_name)
+    logger.info("HRZ: maybe_transfer_kv_layer(unified_attention_with_output) self=%s", self)
     self.impl.forward(
         self,
         query,

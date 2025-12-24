@@ -2303,6 +2303,7 @@ def reshape_and_cache_flash(
     k_scale: torch.Tensor,
     v_scale: torch.Tensor,
 ) -> None:
+    logger.info("HRZ: reshape_and_cache_flash(): heading to _C_cache_ops version")
     torch.ops._C_cache_ops.reshape_and_cache_flash(
         key,
         value,

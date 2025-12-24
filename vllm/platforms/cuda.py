@@ -120,6 +120,7 @@ class CudaPlatformBase(Platform):
         """
         Set the device for the current platform.
         """
+        logger.info("HRZ: CudaPlatformBase::set_device()")
         torch.cuda.set_device(device)
         # With this trick we can force the device to be set eagerly
         # see https://github.com/pytorch/pytorch/issues/155668
@@ -149,6 +150,7 @@ class CudaPlatformBase(Platform):
     @classmethod
     def check_and_update_config(cls, vllm_config: "VllmConfig") -> None:
         from vllm.attention.backends.registry import AttentionBackendEnum
+        logger.info("HRZ: CudaPlatformBase::check_and_update_config()")
 
         parallel_config = vllm_config.parallel_config
         model_config = vllm_config.model_config
@@ -251,6 +253,7 @@ class CudaPlatformBase(Platform):
     def get_current_memory_usage(
         cls, device: torch.types.Device | None = None
     ) -> float:
+        logger.info("HRZ: CudaPlatformBase::get_current_memory_usage()")
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats(device)
         return torch.cuda.max_memory_allocated(device)
@@ -264,6 +267,7 @@ class CudaPlatformBase(Platform):
         list[tuple["AttentionBackendEnum", int]],
         dict["AttentionBackendEnum", list[str]],
     ]:
+        logger.info("HRZ: CudaPlatformBase::get_valid_backends()")
         valid_backends_priorities = []
         invalid_reasons = {}
 
@@ -292,6 +296,7 @@ class CudaPlatformBase(Platform):
         selected_backend: "AttentionBackendEnum",
         attn_selector_config: "AttentionSelectorConfig",
     ) -> str:
+        logger.info("HRZ: CudaPlatformBase::get_attn_backend_cls()")
         device_capability = cls.get_device_capability()
         assert device_capability is not None
 
@@ -359,6 +364,7 @@ class CudaPlatformBase(Platform):
 
     @classmethod
     def get_supported_vit_attn_backends(cls) -> list["AttentionBackendEnum"]:
+        logger.info("HRZ: CudaPlatformBase::get_supported_vit_attn_backends()")
         return [
             AttentionBackendEnum.TORCH_SDPA,
             AttentionBackendEnum.FLASH_ATTN,
@@ -371,6 +377,7 @@ class CudaPlatformBase(Platform):
         dtype: torch.dtype,
         backend: Optional["AttentionBackendEnum"] = None,
     ) -> "AttentionBackendEnum":
+        logger.info("HRZ: CudaPlatformBase::get_vit_attn_backend()")
         if backend is not None:
             assert backend in cls.get_supported_vit_attn_backends(), (
                 f"Backend {backend} is not supported for vit attention. "
@@ -394,24 +401,29 @@ class CudaPlatformBase(Platform):
 
     @classmethod
     def get_punica_wrapper(cls) -> str:
+        logger.info("HRZ: CudaPlatformBase::get_punica_wrapper()")
         return "vllm.lora.punica_wrapper.punica_gpu.PunicaWrapperGPU"
 
     @classmethod
     def get_device_communicator_cls(cls) -> str:
+        logger.info("HRZ: CudaPlatformBase::get_device_communicator_cls()")
         return (
             "vllm.distributed.device_communicators.cuda_communicator.CudaCommunicator"  # noqa
         )
 
     @classmethod
     def supports_fp8(cls) -> bool:
+        logger.info("HRZ: CudaPlatformBase::supports_fp8()")
         return cls.has_device_capability(89)
 
     @classmethod
     def use_custom_allreduce(cls) -> bool:
+        logger.info("HRZ: CudaPlatformBase::use_custom_allreduce()")
         return True
 
     @classmethod
     def opaque_attention_op(cls) -> bool:
+        logger.info("HRZ: CudaPlatformBase::opaque_attention_op()")
         return True
 
     @classmethod
@@ -420,10 +432,12 @@ class CudaPlatformBase(Platform):
 
     @classmethod
     def device_count(cls) -> int:
+        logger.info("HRZ: CudaPlatformBase::device_count()")
         return cuda_device_count_stateless()
 
     @classmethod
     def check_if_supports_dtype(cls, dtype: torch.dtype):
+        logger.info("HRZ: CudaPlatformBase::check_if_supports_dtype()")
         if dtype == torch.bfloat16:  # noqa: SIM102
             if not cls.has_device_capability(80):
                 capability = cls.get_device_capability()
@@ -452,6 +466,7 @@ class CudaPlatformBase(Platform):
         dst_block_indices: torch.Tensor,
     ) -> None:
         """Copy blocks from src_cache to dst_cache on GPU."""
+        logger.info("HRZ: CudaPlatformBase::insert_blocks_to_device()")
         _src_cache = src_cache[:, src_block_indices]
         dst_cache[:, dst_block_indices] = _src_cache.to(dst_cache.device)
 
@@ -464,6 +479,7 @@ class CudaPlatformBase(Platform):
         dst_block_indices: torch.Tensor,
     ) -> None:
         """Copy blocks from GPU to host (CPU)."""
+        logger.info("HRZ: CudaPlatformBase::swap_out_blocks_to_host()")
         _src_cache = src_cache[:, src_block_indices]
         dst_cache[:, dst_block_indices] = _src_cache.cpu()
 

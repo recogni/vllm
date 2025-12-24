@@ -527,6 +527,7 @@ class FlashAttentionImpl(AttentionImpl):
         kv_sharing_target_layer_name: str | None = None,
         sinks: torch.Tensor | None = None,
     ) -> None:
+        logger.info("HRZ: FlashAttentionImpl::__init__()")
         self.num_heads = num_heads
         self.head_size = head_size
         self.scale = float(scale)
@@ -598,6 +599,7 @@ class FlashAttentionImpl(AttentionImpl):
               {q,k,v}_descale to be (num_sequences, num_kv_heads).
               We use torch's .expand() to avoid duplicating values
         """
+        logger.info("HRZ: FlashAttentionImpl::forward(): attn_type=%s kv_sharing_target_layer_name=%s kv_cache_dtype=%s", self.attn_type, self.kv_sharing_target_layer_name, self.kv_cache_dtype)
         assert output is not None, "Output tensor must be provided."
 
         if output_scale is not None or output_block_scale is not None:
@@ -606,6 +608,7 @@ class FlashAttentionImpl(AttentionImpl):
             )
 
         if attn_metadata is None:
+            logger.info("HRZ: FlashAttentionImpl::forward(): filling output with 0")
             # Profiling run.
             return output.fill_(0)
 
@@ -646,6 +649,7 @@ class FlashAttentionImpl(AttentionImpl):
             and key is not None
             and value is not None
         ):
+            logger.info("HRZ: FlashAttentionImpl::forward(): going to reshape_and_cache_flash()")
             # Reshape the input keys and values and store them in the cache.
             # Skip this if sharing KV cache with an earlier attention layer.
             # NOTE(woosuk): Here, key and value are padded while slot_mapping is
@@ -673,6 +677,7 @@ class FlashAttentionImpl(AttentionImpl):
             value_cache = value_cache.view(dtype)
 
         if not attn_metadata.use_cascade:
+            logger.info("HRZ: FlashAttentionImpl::forward(): not attn_metadata.use_cascade self.dcp_world_size=%s", self.dcp_world_size)
             cu_seqlens_q = attn_metadata.query_start_loc
             seqused_k = attn_metadata.seq_lens
             max_seqlen_q = attn_metadata.max_query_len
@@ -723,6 +728,7 @@ class FlashAttentionImpl(AttentionImpl):
                 return output
 
         # Cascade attention (rare case).
+        logger.info("HRZ: FlashAttentionImpl::forward(): going to cascade_attention()")
         cascade_attention(
             output[:num_actual_tokens],
             query[:num_actual_tokens],
