@@ -303,7 +303,8 @@ class Attention(nn.Module, AttentionLayerBase):
         context using
         `vllm.forward_context.get_forward_context().attn_metadata`.
         """
-        logger.info("HRZ: Attention::forward(): use_output=%s use_direct_call=%s", self.use_output, self.use_direct_call)
+        if not torch.compiler.is_compiling():
+            logger.info("HRZ: Attention::forward(): use_output=%s use_direct_call=%s", self.use_output, self.use_direct_call)
         if self.calculate_kv_scales:
             torch.ops.vllm.maybe_calc_kv_scales(query, key, value, self.layer_name)
         output_dtype = query.dtype
