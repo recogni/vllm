@@ -371,6 +371,8 @@ def _support_torch_compile(
         if self.do_not_compile or torch.compiler.is_compiling():
             return self.forward(*args, **kwargs)
 
+        logger.info("HRZ: within _support_torch_compile(), entering __call__() for %s", cls.__name__)
+
         # if aot_compiled_fn is set, just call it.
         if getattr(self, "aot_compiled_fn", None) is not None:
             return self.aot_compiled_fn(self, *args, **kwargs)
@@ -533,6 +535,7 @@ def _support_torch_compile(
                 output = TorchCompileWithNoGuardsWrapper.__call__(self, *args, **kwargs)
 
         self.compiled = True
+        logger.info("HRZ: within _support_torch_compile(), setting self.compiled to True for %s", cls.__name__)
         return output
 
     cls.__call__ = __call__
