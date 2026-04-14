@@ -822,7 +822,7 @@ pystemmer==3.0.0
     # via mteb
 pytablewriter==1.2.0
     # via lm-eval
-pytest==8.3.5
+pytest==9.0.3
     # via
     #   -r requirements/test.in
     #   buildkite-test-collector
